@@ -1,0 +1,4 @@
+llama-index
+langchain
+openai
+gradio
