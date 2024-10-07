@@ -1,14 +1,13 @@
 import pandas as pd
-from langchain_community.utilities import SQLDatabase
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sentence_transformers import SentenceTransformer
 from tqdm import tqdm
+import numpy as np
+import json
 
 # Load your datasets
 incidents_df = pd.read_csv('incidents.csv')
-rfc_df = pd.read_csv('rfc.csv')
-events_df = pd.read_csv('events.csv')
-ci_df = pd.read_csv('ci_data.csv')
+# Load other dataframes as needed
 
 # Initialize the embedding model
 model = SentenceTransformer('all-MiniLM-L6-v2')
@@ -17,39 +16,55 @@ model = SentenceTransformer('all-MiniLM-L6-v2')
 def create_embeddings(df, text_column):
     embeddings = []
     for text in tqdm(df[text_column], desc=f"Creating embeddings for {text_column}"):
-        embedding = model.encode(str(text))  # Convert to string to handle any non-string data
-        embeddings.append(embedding.tolist())  # Convert numpy array to list for storage
+        embedding = model.encode(str(text))
+        embeddings.append(embedding)
     return embeddings
 
-# Create embeddings for each dataset
+# Create embeddings for the incidents dataset
 incidents_df['embeddings'] = create_embeddings(incidents_df, 'BRIEF_DESCRIPTION')
-rfc_df['embeddings'] = create_embeddings(rfc_df, 'BRIEF_DESCRIPTION')
-events_df['embeddings'] = create_embeddings(events_df, 'event_title')
-ci_df['embeddings'] = create_embeddings(ci_df, 'DESCRIPTION')
+
+# Function to preprocess dataframe for SQLite storage
+def preprocess_dataframe(df):
+    for column in df.columns:
+        if df[column].dtype == 'object':
+            df[column] = df[column].astype(str)
+        elif isinstance(df[column].iloc[0], np.ndarray):
+            df[column] = df[column].apply(lambda x: json.dumps(x.tolist()))
+    return df
+
+# Preprocess the dataframe
+incidents_df = preprocess_dataframe(incidents_df)
 
 # Set up SQLite database
-db_path = 'enterprise_data.db'
-engine = create_engine(f'sqlite:///{db_path}')
+db_path = 'sqlite:///./src/sqldb_combine.db'
+engine = create_engine(db_path)
 
 # Store datasets in SQLite
-incidents_df.to_sql("Incidents", engine, index=False, if_exists='replace')
-rfc_df.to_sql("RFC", engine, index=False, if_exists='replace')
-events_df.to_sql("Events", engine, index=False, if_exists='replace')
-ci_df.to_sql("CI_Data", engine, index=False, if_exists='replace')
+incidents_df.to_sql("Incidents", engine, index=False, if_exists='replace', chunksize=1000)
+print("Database creation and data storage complete.")
 
-# Verify data storage
-db = SQLDatabase.from_uri(f'sqlite:///{db_path}')
+# Function to test data retrieval
+def sql_execute(sql_query):
+    with engine.connect() as conn:
+        sql_response = conn.execute(text(f"{sql_query}"))
+        rows = sql_response.fetchall()
+        columns = sql_response.keys()
+        df = pd.DataFrame.from_records(rows, columns=columns)
+    return df
 
-# Function to print sample data from each table
-def print_sample_data(table_name):
-    result = db.run(f"SELECT * FROM {table_name} LIMIT 5;")
-    print(f"\nSample data from {table_name}:")
-    print(result)
+# Test data retrieval
+test_query = "SELECT * FROM Incidents LIMIT 5"
+result_df = sql_execute(test_query)
+print("\nSample data retrieved from the database:")
+print(result_df)
 
-# Verify data in each table
-print_sample_data("Incidents")
-print_sample_data("RFC")
-print_sample_data("Events")
-print_sample_data("CI_Data")
+# Optional: Function to convert embeddings back to numpy arrays if needed
+def convert_embeddings(df):
+    if 'embeddings' in df.columns:
+        df['embeddings'] = df['embeddings'].apply(lambda x: np.array(json.loads(x)))
+    return df
 
-print("\nDatabase creation and data storage complete.")
+# Example of converting embeddings back to numpy arrays
+result_df = convert_embeddings(result_df)
+print("\nEmbeddings converted back to numpy arrays:")
+print(result_df['embeddings'].iloc[0])
