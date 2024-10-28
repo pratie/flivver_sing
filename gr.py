@@ -1,3 +1,8 @@
+
+filtered_docs = [
+    ticket for ticket in docs
+    if str(ticket[0].metadata.get('event_id')) != str(tid)
+]
 import os
 import sys
 import logging
