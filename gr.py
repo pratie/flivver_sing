@@ -1,3 +1,5 @@
+# helper.py
+
 import pandas as pd
 import psycopg2
 import json
@@ -130,7 +132,8 @@ def fetch_table_data(table_name: str, conn: psycopg2.extensions.connection) -> p
         return pd.DataFrame()
 
 
-def parse_all_tables(conn: psycopg2.extensions.connection) -> Dict[str, pd.DataFrame]:
+def get_all_tables() -> Dict[str, pd.DataFrame]:
+    """Main function to fetch all tables and return as dictionary of DataFrames"""
     tables = {
         'events': 'dc1.events',
         'incidents': 'dc1sm_ro.incidents',
@@ -143,6 +146,10 @@ def parse_all_tables(conn: psycopg2.extensions.connection) -> Dict[str, pd.DataF
     results = {}
 
     try:
+        print("Connecting to database...")
+        conn = connect_to_postgres({})
+        print("Starting data fetch...")
+        
         for key, table_name in tables.items():
             print(f"Processing: {table_name}")
             results[key] = fetch_table_data(table_name, conn)
@@ -155,15 +162,3 @@ def parse_all_tables(conn: psycopg2.extensions.connection) -> Dict[str, pd.DataF
             conn.close()
 
     return results
-
-
-if __name__ == "__main__":
-    try:
-        print("Connecting to database...")
-        conn = connect_to_postgres({})  # Using get_postgres_secrets
-        print("Starting data fetch...")
-        dfs = parse_all_tables(conn)
-        print("Completed all tables")
-            
-    except Exception as e:
-        print(f"Error: {str(e)}")
