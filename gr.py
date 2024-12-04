@@ -94,9 +94,14 @@ def fetch_table_data(table_name: str, conn: psycopg2.extensions.connection) -> p
                     SELECT {columns_str} 
                     FROM {table_name}
                     WHERE update_time >= '{seven_days_ago}'
+                    LIMIT 100000
                 """
             else:
-                query = f"SELECT {columns_str} FROM {table_name}"
+                query = f"""
+                    SELECT {columns_str} 
+                    FROM {table_name}
+                    LIMIT 100000
+                """
 
             cursor.execute(query.replace(columns_str, 'COUNT(*)', 1))
             total_rows = cursor.fetchone()[0]
