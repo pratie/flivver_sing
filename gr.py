@@ -7,6 +7,7 @@ from tqdm import tqdm
 import psutil
 import os
 from datetime import datetime, timedelta
+import gc
 
 
 def get_memory_usage():
@@ -20,7 +21,6 @@ def get_postgres_secrets():
     Add your implementation for retrieving secrets
     This should return a JSON string containing database credentials
     """
-    # Example implementation - replace with your actual secrets retrieval method
     secrets = {
         'dbname': 'your_database',
         'username': 'your_username',
@@ -52,8 +52,35 @@ def connect_to_postgres(db_params: Dict) -> psycopg2.extensions.connection:
         raise
 
 
+def optimize_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    """Optimize DataFrame memory usage by adjusting numeric data types"""
+    for col in df.columns:
+        # Convert integer columns to smallest possible int type
+        if df[col].dtype == 'int64':
+            if df[col].min() >= 0:
+                if df[col].max() < 255:
+                    df[col] = df[col].astype('uint8')
+                elif df[col].max() < 65535:
+                    df[col] = df[col].astype('uint16')
+                elif df[col].max() < 4294967295:
+                    df[col] = df[col].astype('uint32')
+            else:
+                if df[col].min() > -128 and df[col].max() < 127:
+                    df[col] = df[col].astype('int8')
+                elif df[col].min() > -32768 and df[col].max() < 32767:
+                    df[col] = df[col].astype('int16')
+                elif df[col].min() > -2147483648 and df[col].max() < 2147483647:
+                    df[col] = df[col].astype('int32')
+                    
+        # Convert float columns to float32 if possible
+        elif df[col].dtype == 'float64':
+            df[col] = df[col].astype('float32')
+    
+    return df
+
+
 def fetch_table_data(table_name: str, conn: psycopg2.extensions.connection) -> pd.DataFrame:
-    """Fetch data from table with all columns, showing progress and memory usage"""
+    """Fetch data from table with memory optimization"""
     start_time = time.time()
     initial_memory = get_memory_usage()
     
@@ -73,23 +100,23 @@ def fetch_table_data(table_name: str, conn: psycopg2.extensions.connection) -> p
             # Construct query with time filter for incidents table
             columns_str = ', '.join(columns)
             if 'incidents' in table_name:
-                three_months_ago = (datetime.now() - timedelta(days=90)).strftime('%Y-%m-%d')
+                seven_days_ago = (datetime.now() - timedelta(days=7)).strftime('%Y-%m-%d')
                 query = f"""
                     SELECT {columns_str} 
                     FROM {table_name}
-                    WHERE update_time >= '{three_months_ago}'
+                    WHERE update_time >= '{seven_days_ago}'
                 """
-                print(f"Filtering incidents from: {three_months_ago}")
+                print(f"Filtering incidents from: {seven_days_ago}")
             else:
                 query = f"SELECT {columns_str} FROM {table_name}"
 
-            # Get total row count for progress bar
+            # Get total row count
             count_query = query.replace(columns_str, 'COUNT(*)', 1)
             cursor.execute(count_query)
             total_rows = cursor.fetchone()[0]
             print(f"Total rows to fetch: {total_rows:,}")
             
-            chunk_size = 100000
+            chunk_size = 50000
             chunks = []
             rows_processed = 0
             
@@ -104,12 +131,12 @@ def fetch_table_data(table_name: str, conn: psycopg2.extensions.connection) -> p
                             break
                             
                         df_chunk = pd.DataFrame(data, columns=columns)
+                        df_chunk = optimize_dataframe(df_chunk)
                         chunks.append(df_chunk)
                         
                         rows_processed += len(df_chunk)
                         pbar.update(len(df_chunk))
                         
-                        # Show memory usage every chunk
                         current_memory = get_memory_usage()
                         memory_used = current_memory - initial_memory
                         elapsed_time = time.time() - start_time
@@ -118,14 +145,22 @@ def fetch_table_data(table_name: str, conn: psycopg2.extensions.connection) -> p
                               f"\n- Rows in chunk: {len(df_chunk):,}"
                               f"\n- Total rows: {rows_processed:,} of {total_rows:,}"
                               f"\n- Memory usage: {memory_used:.2f} MB"
-                              f"\n- Elapsed time: {elapsed_time:.1f} seconds"
                               f"\n- Processing rate: {rows_processed/elapsed_time:.0f} rows/sec")
+                        
+                        # Clear some memory if usage is high
+                        if memory_used > 1000:  # If memory usage exceeds 1GB
+                            gc.collect()
                 
                 if chunks:
                     print("\nCombining chunks...")
                     final_df = pd.concat(chunks, ignore_index=True)
                     
-                    # Calculate final metrics
+                    # Clear chunks to free memory
+                    chunks.clear()
+                    gc.collect()
+                    
+                    final_df = optimize_dataframe(final_df)
+                    
                     total_time = time.time() - start_time
                     final_memory = get_memory_usage() - initial_memory
                     
@@ -133,9 +168,7 @@ def fetch_table_data(table_name: str, conn: psycopg2.extensions.connection) -> p
                           f"\n- Total rows: {len(final_df):,}"
                           f"\n- Total columns: {len(final_df.columns)}"
                           f"\n- Processing time: {total_time:.2f} seconds"
-                          f"\n- Average speed: {len(final_df)/total_time:.0f} rows/sec"
-                          f"\n- Memory used: {final_memory:.2f} MB"
-                          f"\n- Memory per row: {(final_memory * 1024 * 1024 / len(final_df)):.0f} bytes")
+                          f"\n- Memory used: {final_memory:.2f} MB")
                     
                     return final_df
                 else:
@@ -148,7 +181,7 @@ def fetch_table_data(table_name: str, conn: psycopg2.extensions.connection) -> p
 
 
 def parse_all_tables(conn: psycopg2.extensions.connection) -> Dict[str, pd.DataFrame]:
-    """Parse all specified tables and return dictionary of DataFrames"""
+    """Parse all tables and return dictionary of DataFrames"""
     tables = {
         'events': 'dc1.events',
         'incidents': 'dc1sm_ro.incidents',
@@ -166,6 +199,10 @@ def parse_all_tables(conn: psycopg2.extensions.connection) -> Dict[str, pd.DataF
         for key, table_name in tables.items():
             print(f"\nProcessing table: {table_name}")
             print("=" * 50)
+            
+            # Clear memory before each table
+            gc.collect()
+            
             results[key] = fetch_table_data(table_name, conn)
             
             if not results[key].empty:
@@ -185,7 +222,6 @@ def parse_all_tables(conn: psycopg2.extensions.connection) -> Dict[str, pd.DataF
             conn.close()
             print("\nDatabase connection closed")
 
-    # Show total processing statistics
     total_time = time.time() - start_time
     total_memory = get_memory_usage() - initial_memory
     print(f"\nTotal Processing Statistics:")
