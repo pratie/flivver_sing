@@ -1,110 +1,83 @@
+import pandas as pd
+import psycopg2
+from typing import Dict, List
 
-filtered_docs = [
-    ticket for ticket in docs
-    if str(ticket[0].metadata.get('event_id')) != str(tid)
-]
-import os
-import sys
-import logging
-import sqlite3
-import nest_asyncio
-import gradio as gr
-from llama_index.core import GPTVectorStoreIndex, SimpleDirectoryReader, ServiceContext, StorageContext, load_index_from_storage
-from llama_index.embeddings.huggingface import HuggingFaceEmbedding
-from llama_index.core import Settings, set_global_service_context
-from llama_index.core.query_engine.router_query_engine import RouterQueryEngine
-from llama_index.core.selectors.llm_selectors import LLMSingleSelector
-from llama_index.core.tools.query_engine import QueryEngineTool
-from llama_index.embeddings.openai import OpenAIEmbedding
-from llama_index.llms.openai import OpenAI
-from dotenv import load_dotenv
 
-# Load environment variables from .env file
-load_dotenv()
+def connect_to_postgres(db_params: Dict) -> psycopg2.extensions.connection:
+    """Establish connection to PostgreSQL database"""
+    try:
+        conn = psycopg2.connect(**db_params)
+        return conn
+    except Exception as e:
+        print(f"Error connecting to database: {e}")
+        raise
 
-# Set up logging
-logger = logging.getLogger()
-logger.setLevel(logging.INFO)
-logger.handlers = []
-handler = logging.StreamHandler(sys.stdout)
-handler.setLevel(logging.INFO)
-logger.addHandler(handler)
 
-os.environ["OPENAI_API_KEY"] = os.getenv("OPENAI_API_KEY")
+def fetch_table_data(table_name: str, conn: psycopg2.extensions.connection) -> pd.DataFrame:
+    """Fetch all data from specified table and return as DataFrame"""
+    cursor = conn.cursor()
+    try:
+        # Get column names first
+        cursor.execute(f"""
+            SELECT column_name 
+            FROM information_schema.columns 
+            WHERE table_name = '{table_name}'
+        """)
+        columns = [desc[0] for desc in cursor.fetchall()]
 
-# Initialize Anthropic and HuggingFace models
-llm = OpenAI(temperature=0.5, model_name="gpt-3.5-turbo")
-embed_model = OpenAIEmbedding()
-# Configure settings
-chunk_size = 200
-Settings.llm = llm
-Settings.embed_model = embed_model
-Settings.chunk_size = chunk_size
+        # Fetch actual data
+        cursor.execute(f"SELECT * FROM {table_name}")
+        data = cursor.fetchall()
 
-# Initialize SQLite database
-def init_db():
-    conn = sqlite3.connect('chat_history.db')
-    c = conn.cursor()
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS chat_history (
-            user_id TEXT,
-            message TEXT,
-            response TEXT
-        )
-    ''')
-    conn.commit()
-    conn.close()
+        # Create DataFrame
+        df = pd.DataFrame(data, columns=columns)
+        return df
+    except Exception as e:
+        print(f"Error fetching data from {table_name}: {e}")
+        return pd.DataFrame()
+    finally:
+        cursor.close()
 
-init_db()
 
-def construct_index(directory_path):
-    docs = SimpleDirectoryReader(directory_path).load_data()
-    index = GPTVectorStoreIndex.from_documents(docs, service_context=ServiceContext.from_defaults())
-    index.storage_context.persist(persist_dir="indexes")
-    return index
+def parse_all_tables(db_params: Dict) -> Dict[str, pd.DataFrame]:
+    """Parse all specified tables and return dictionary of DataFrames"""
+    tables = {
+        'events': 'dc1.events',
+        'incidents': 'dc1sm_ro.incidents',
+        'rfc': 'dc1sm_ro.rfc',
+        'problems': 'dc1sm_ro.problems',
+        'problem_tasks': 'dc1sm_ro.problem_tasks',
+        'ci': 'itsm_owner.cis'
+    }
 
-def save_chat_history(user_id, message, response):
-    conn = sqlite3.connect('chat_history.db')
-    c = conn.cursor()
-    c.execute('INSERT INTO chat_history (user_id, message, response) VALUES (?, ?, ?)', (user_id, message, response))
-    conn.commit()
-    conn.close()
+    conn = connect_to_postgres(db_params)
+    results = {}
 
-def get_chat_history(user_id):
-    conn = sqlite3.connect('chat_history.db')
-    c = conn.cursor()
-    c.execute('SELECT message, response FROM chat_history WHERE user_id = ?', (user_id,))
-    history = c.fetchall()
-    conn.close()
-    return history
+    try:
+        for key, table_name in tables.items():
+            print(f"Fetching data from {table_name}...")
+            results[key] = fetch_table_data(table_name, conn)
+            print(f"Successfully fetched {len(results[key])} rows from {table_name}")
+    finally:
+        conn.close()
 
-def chatbot(user_id, input_text):
-    storage_context = StorageContext.from_defaults(persist_dir="indexes")
-    query_engine = load_index_from_storage(storage_context).as_query_engine()
-    response = query_engine.query(input_text)
-    save_chat_history(user_id, input_text, response.response)
-    return response.response
+    return results
 
-def get_history(user_id):
-    history = get_chat_history(user_id)
-    formatted_history = "\n".join([f"User: {msg}\nBot: {resp}" for msg, resp in history])
-    return formatted_history or "No history found for this user."
 
-def chat_interface(user_id, input_text):
-    if not input_text:
-        return get_history(user_id)
-    return chatbot(user_id, input_text)
+# Example usage:
+if __name__ == "__main__":
+    db_params = {
+        'host': 'your_host',
+        'database': 'your_database',
+        'user': 'your_username',
+        'password': 'your_password'
+    }
 
-iface = gr.Interface(
-    fn=chat_interface,
-    inputs=[
-        gr.Textbox(lines=1, placeholder="Enter User ID", label="User ID"),
-        gr.Textbox(lines=5, placeholder="Enter your question here", label="Enter your question here")
-    ],
-    outputs="text",
-    title="Custom-trained AI Chatbot"
-)
+    # Fetch all tables
+    dfs = parse_all_tables(db_params)
 
-index = construct_index("Data")
-
-iface.launch(share=True)
+    # Example analysis
+    for table_name, df in dfs.items():
+        print(f"\nTable: {table_name}")
+        print(f"Shape: {df.shape}")
+        print("Columns:", df.columns.tolist())
