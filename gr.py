@@ -2,6 +2,7 @@ import pandas as pd
 import psycopg2
 import json
 from typing import Dict, List
+import time
 
 
 def get_postgres_secrets():
@@ -42,30 +43,60 @@ def connect_to_postgres(db_params: Dict) -> psycopg2.extensions.connection:
 
 
 def fetch_table_data(table_name: str, conn: psycopg2.extensions.connection) -> pd.DataFrame:
-    """Fetch all data from specified table and return as DataFrame"""
-    cursor = conn.cursor()
+    """Fetch large datasets in chunks using server-side cursor"""
+    chunk_size = 100000  # Adjust this based on your system's memory
+    start_time = time.time()
+    
     try:
-        # Execute query to fetch all data
-        query = f"SELECT * FROM {table_name}"
-        print(f"Executing query: {query}")
-        cursor.execute(query)
-        
-        # Get column names from cursor description
-        columns = [desc[0] for desc in cursor.description]
-        print(f"Found columns: {columns}")
-        
-        # Fetch the actual data
-        data = cursor.fetchall()
-        print(f"Fetched {len(data)} rows")
-        
-        # Create DataFrame with the fetched columns
-        df = pd.DataFrame(data, columns=columns)
-        return df
+        # Use server-side cursor by naming it
+        with conn.cursor(name='fetch_large_data') as cursor:
+            print(f"\nStarting to fetch data from {table_name}")
+            cursor.execute(f"SELECT * FROM {table_name}")
+            
+            # Get column names
+            columns = [desc[0] for desc in cursor.description]
+            print(f"Found {len(columns)} columns: {columns}")
+            
+            # Initialize empty list to store chunks
+            chunks = []
+            total_rows = 0
+            
+            while True:
+                print(f"Fetching chunk of {chunk_size:,} rows... (Total so far: {total_rows:,})")
+                data = cursor.fetchmany(chunk_size)
+                if not data:
+                    break
+                chunk_df = pd.DataFrame(data, columns=columns)
+                chunks.append(chunk_df)
+                total_rows += len(chunk_df)
+                
+                # Calculate and display progress metrics
+                elapsed_time = time.time() - start_time
+                rows_per_second = total_rows / elapsed_time if elapsed_time > 0 else 0
+                print(f"Progress: {len(chunk_df):,} rows in chunk, "
+                      f"{total_rows:,} total rows, "
+                      f"{rows_per_second:.0f} rows/second")
+            
+            print(f"\nCombining {len(chunks)} chunks...")
+            final_df = pd.concat(chunks, ignore_index=True)
+            
+            # Calculate final metrics
+            total_time = time.time() - start_time
+            total_rows = len(final_df)
+            avg_rows_per_second = total_rows / total_time if total_time > 0 else 0
+            
+            print(f"\nFinal Statistics:")
+            print(f"Total Rows: {total_rows:,}")
+            print(f"Total Time: {total_time:.2f} seconds")
+            print(f"Average Speed: {avg_rows_per_second:.0f} rows/second")
+            print(f"Final Dataset Shape: {final_df.shape}")
+            print(f"Memory Usage: {final_df.memory_usage().sum() / 1024 / 1024:.2f} MB")
+            
+            return final_df
+            
     except Exception as e:
         print(f"Error fetching data from {table_name}: {e}")
         return pd.DataFrame()
-    finally:
-        cursor.close()
 
 
 def parse_all_tables(conn: psycopg2.extensions.connection) -> Dict[str, pd.DataFrame]:
@@ -84,12 +115,19 @@ def parse_all_tables(conn: psycopg2.extensions.connection) -> Dict[str, pd.DataF
     try:
         for key, table_name in tables.items():
             print(f"\nProcessing table: {table_name}")
+            print("=" * 50)
             results[key] = fetch_table_data(table_name, conn)
+            
             if not results[key].empty:
-                print(f"Successfully fetched {len(results[key])} rows and {len(results[key].columns)} columns from {table_name}")
-                print(f"Columns: {results[key].columns.tolist()}")
+                print(f"\nTable {table_name} Summary:")
+                print(f"Rows: {len(results[key]):,}")
+                print(f"Columns: {len(results[key].columns)}")
+                print(f"Memory Usage: {results[key].memory_usage().sum() / 1024 / 1024:.2f} MB")
+                print("=" * 50)
             else:
                 print(f"No data fetched from {table_name}")
+                print("=" * 50)
+                
     except Exception as e:
         print(f"Error in parse_all_tables: {e}")
     finally:
@@ -112,11 +150,13 @@ if __name__ == "__main__":
         dfs = parse_all_tables(conn)
 
         # Print summary of results
-        print("\nSummary of fetched data:")
+        print("\nFinal Summary of All Tables:")
+        print("=" * 50)
         for table_name, df in dfs.items():
             print(f"\nTable: {table_name}")
             print(f"Shape: {df.shape}")
-            print("Columns:", df.columns.tolist())
+            print(f"Memory Usage: {df.memory_usage().sum() / 1024 / 1024:.2f} MB")
+            print(f"Columns: {df.columns.tolist()}")
             
     except Exception as e:
         print(f"\nError in main execution: {e}")
