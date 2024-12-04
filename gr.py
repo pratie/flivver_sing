@@ -1,13 +1,41 @@
 import pandas as pd
 import psycopg2
+import json
 from typing import Dict, List
+
+
+def get_postgres_secrets():
+    """
+    Add your implementation for retrieving secrets
+    This should return a JSON string containing database credentials
+    """
+    # Example implementation - replace with your actual secrets retrieval method
+    secrets = {
+        'dbname': 'your_database',
+        'username': 'your_username',
+        'password': 'your_password',
+        'host': 'your_host',
+        'port': 'your_port'
+    }
+    return json.dumps(secrets)
 
 
 def connect_to_postgres(db_params: Dict) -> psycopg2.extensions.connection:
     """Establish connection to PostgreSQL database"""
+    result = get_postgres_secrets()
+    result_dict = {}
+    res = json.loads(result)
+    result_dict.update(res)
+    
     try:
-        conn = psycopg2.connect(**db_params)
-        return conn
+        postgres_conn = psycopg2.connect(
+            dbname=result_dict['dbname'],
+            user=result_dict['username'],
+            password=result_dict['password'],
+            host=result_dict['host'],
+            port=result_dict['port']
+        )
+        return postgres_conn
     except Exception as e:
         print(f"Error connecting to database: {e}")
         raise
@@ -39,7 +67,7 @@ def fetch_table_data(table_name: str, conn: psycopg2.extensions.connection) -> p
         cursor.close()
 
 
-def parse_all_tables(db_params: Dict) -> Dict[str, pd.DataFrame]:
+def parse_all_tables(conn: psycopg2.extensions.connection) -> Dict[str, pd.DataFrame]:
     """Parse all specified tables and return dictionary of DataFrames"""
     tables = {
         'events': 'dc1.events',
@@ -50,7 +78,6 @@ def parse_all_tables(db_params: Dict) -> Dict[str, pd.DataFrame]:
         'ci': 'itsm_owner.cis'
     }
 
-    conn = connect_to_postgres(db_params)
     results = {}
 
     try:
@@ -59,22 +86,18 @@ def parse_all_tables(db_params: Dict) -> Dict[str, pd.DataFrame]:
             results[key] = fetch_table_data(table_name, conn)
             print(f"Successfully fetched {len(results[key])} rows from {table_name}")
     finally:
-        conn.close()
+        if conn:
+            conn.close()
 
     return results
 
 
-# Example usage:
 if __name__ == "__main__":
-    db_params = {
-        'host': 'your_host',
-        'database': 'your_database',
-        'user': 'your_username',
-        'password': 'your_password'
-    }
-
+    # Connect to database
+    conn = connect_to_postgres({})  # Empty dict since we're getting params from secrets
+    
     # Fetch all tables
-    dfs = parse_all_tables(db_params)
+    dfs = parse_all_tables(conn)
 
     # Example analysis
     for table_name, df in dfs.items():
