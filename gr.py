@@ -3,6 +3,16 @@ import psycopg2
 import json
 from typing import Dict, List
 import time
+from tqdm import tqdm
+import sys
+import psutil
+import os
+
+
+def get_memory_usage():
+    """Get current memory usage of the process"""
+    process = psutil.Process(os.getpid())
+    return process.memory_info().rss / 1024 / 1024  # in MB
 
 
 def get_postgres_secrets():
@@ -42,8 +52,22 @@ def connect_to_postgres(db_params: Dict) -> psycopg2.extensions.connection:
         raise
 
 
+def get_row_count(table_name: str, conn: psycopg2.extensions.connection) -> int:
+    """Get total number of rows in table for progress bar"""
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(f"SELECT COUNT(*) FROM {table_name}")
+            return cursor.fetchone()[0]
+    except Exception as e:
+        print(f"Error getting row count: {e}")
+        return 0
+
+
 def fetch_table_data(table_name: str, conn: psycopg2.extensions.connection) -> pd.DataFrame:
-    """Fetch data from table with all columns"""
+    """Fetch data from table with all columns, showing progress and memory usage"""
+    start_time = time.time()
+    initial_memory = get_memory_usage()
+    
     try:
         # First get all column names
         with conn.cursor() as cursor:
@@ -55,7 +79,11 @@ def fetch_table_data(table_name: str, conn: psycopg2.extensions.connection) -> p
                 ORDER BY ordinal_position
             """)
             columns = [row[0] for row in cursor.fetchall()]
-            print(f"Found columns: {columns}")
+            print(f"\nFound {len(columns)} columns")
+
+            # Get total row count for progress bar
+            total_rows = get_row_count(table_name, conn)
+            print(f"Total rows to fetch: {total_rows:,}")
 
             # Now fetch the data with all columns
             columns_str = ', '.join(columns)
@@ -63,22 +91,49 @@ def fetch_table_data(table_name: str, conn: psycopg2.extensions.connection) -> p
             
             chunk_size = 100000
             chunks = []
+            rows_processed = 0
             
+            print("\nFetching data:")
             with conn.cursor('large_data_cursor') as data_cursor:
-                print(f"Executing query: {query}")
                 data_cursor.execute(query)
                 
-                while True:
-                    data = data_cursor.fetchmany(chunk_size)
-                    if not data:
-                        break
-                    df_chunk = pd.DataFrame(data, columns=columns)
-                    chunks.append(df_chunk)
-                    print(f"Fetched chunk of {len(df_chunk)} rows")
+                with tqdm(total=total_rows, unit='rows', unit_scale=True) as pbar:
+                    while True:
+                        data = data_cursor.fetchmany(chunk_size)
+                        if not data:
+                            break
+                            
+                        df_chunk = pd.DataFrame(data, columns=columns)
+                        chunks.append(df_chunk)
+                        
+                        rows_processed += len(df_chunk)
+                        pbar.update(len(df_chunk))
+                        
+                        # Show memory usage every chunk
+                        current_memory = get_memory_usage()
+                        memory_used = current_memory - initial_memory
+                        
+                        print(f"\nChunk processed:"
+                              f"\n- Rows in chunk: {len(df_chunk):,}"
+                              f"\n- Total rows: {rows_processed:,}"
+                              f"\n- Memory usage: {memory_used:.2f} MB"
+                              f"\n- Processing rate: {rows_processed/(time.time()-start_time):.0f} rows/sec")
                 
                 if chunks:
+                    print("\nCombining chunks...")
                     final_df = pd.concat(chunks, ignore_index=True)
-                    print(f"Total rows fetched: {len(final_df)}")
+                    
+                    # Calculate final metrics
+                    total_time = time.time() - start_time
+                    final_memory = get_memory_usage() - initial_memory
+                    
+                    print(f"\nFinal Statistics:"
+                          f"\n- Total rows: {len(final_df):,}"
+                          f"\n- Total columns: {len(final_df.columns)}"
+                          f"\n- Processing time: {total_time:.2f} seconds"
+                          f"\n- Average speed: {len(final_df)/total_time:.0f} rows/sec"
+                          f"\n- Memory used: {final_memory:.2f} MB")
+                    
                     return final_df
                 else:
                     print("No data found")
@@ -101,6 +156,8 @@ def parse_all_tables(conn: psycopg2.extensions.connection) -> Dict[str, pd.DataF
     }
 
     results = {}
+    start_time = time.time()
+    initial_memory = get_memory_usage()
 
     try:
         for key, table_name in tables.items():
@@ -110,8 +167,9 @@ def parse_all_tables(conn: psycopg2.extensions.connection) -> Dict[str, pd.DataF
             
             if not results[key].empty:
                 print(f"\nTable {table_name} Summary:")
-                print(f"Rows: {len(results[key])}")
-                print(f"Columns: {list(results[key].columns)}")
+                print(f"Rows: {len(results[key]):,}")
+                print(f"Columns: {len(results[key].columns)}")
+                print(f"Memory: {results[key].memory_usage(deep=True).sum() / 1024 / 1024:.2f} MB")
                 print("=" * 50)
             else:
                 print(f"No data fetched from {table_name}")
@@ -123,6 +181,13 @@ def parse_all_tables(conn: psycopg2.extensions.connection) -> Dict[str, pd.DataF
         if conn:
             conn.close()
             print("\nDatabase connection closed")
+
+    # Show total processing statistics
+    total_time = time.time() - start_time
+    total_memory = get_memory_usage() - initial_memory
+    print(f"\nTotal Processing Statistics:")
+    print(f"Total time: {total_time:.2f} seconds")
+    print(f"Total memory used: {total_memory:.2f} MB")
 
     return results
 
@@ -141,6 +206,7 @@ if __name__ == "__main__":
         for table_name, df in dfs.items():
             print(f"\nTable: {table_name}")
             print(f"Shape: {df.shape}")
+            print(f"Memory: {df.memory_usage(deep=True).sum() / 1024 / 1024:.2f} MB")
             print(f"Columns: {list(df.columns)}")
             
     except Exception as e:
