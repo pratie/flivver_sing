@@ -45,19 +45,20 @@ def fetch_table_data(table_name: str, conn: psycopg2.extensions.connection) -> p
     """Fetch all data from specified table and return as DataFrame"""
     cursor = conn.cursor()
     try:
-        # Get column names first
-        cursor.execute(f"""
-            SELECT column_name 
-            FROM information_schema.columns 
-            WHERE table_name = '{table_name}'
-        """)
-        columns = [desc[0] for desc in cursor.fetchall()]
-
-        # Fetch actual data
-        cursor.execute(f"SELECT * FROM {table_name}")
+        # Execute query to fetch all data
+        query = f"SELECT * FROM {table_name}"
+        print(f"Executing query: {query}")
+        cursor.execute(query)
+        
+        # Get column names from cursor description
+        columns = [desc[0] for desc in cursor.description]
+        print(f"Found columns: {columns}")
+        
+        # Fetch the actual data
         data = cursor.fetchall()
-
-        # Create DataFrame
+        print(f"Fetched {len(data)} rows")
+        
+        # Create DataFrame with the fetched columns
         df = pd.DataFrame(data, columns=columns)
         return df
     except Exception as e:
@@ -82,25 +83,40 @@ def parse_all_tables(conn: psycopg2.extensions.connection) -> Dict[str, pd.DataF
 
     try:
         for key, table_name in tables.items():
-            print(f"Fetching data from {table_name}...")
+            print(f"\nProcessing table: {table_name}")
             results[key] = fetch_table_data(table_name, conn)
-            print(f"Successfully fetched {len(results[key])} rows from {table_name}")
+            if not results[key].empty:
+                print(f"Successfully fetched {len(results[key])} rows and {len(results[key].columns)} columns from {table_name}")
+                print(f"Columns: {results[key].columns.tolist()}")
+            else:
+                print(f"No data fetched from {table_name}")
+    except Exception as e:
+        print(f"Error in parse_all_tables: {e}")
     finally:
         if conn:
             conn.close()
+            print("\nDatabase connection closed")
 
     return results
 
 
 if __name__ == "__main__":
-    # Connect to database
-    conn = connect_to_postgres({})  # Empty dict since we're getting params from secrets
-    
-    # Fetch all tables
-    dfs = parse_all_tables(conn)
+    try:
+        # Connect to database
+        print("Connecting to database...")
+        conn = connect_to_postgres({})  # Empty dict since we're getting params from secrets
+        print("Successfully connected to database")
+        
+        # Fetch all tables
+        print("\nStarting to fetch tables...")
+        dfs = parse_all_tables(conn)
 
-    # Example analysis
-    for table_name, df in dfs.items():
-        print(f"\nTable: {table_name}")
-        print(f"Shape: {df.shape}")
-        print("Columns:", df.columns.tolist())
+        # Print summary of results
+        print("\nSummary of fetched data:")
+        for table_name, df in dfs.items():
+            print(f"\nTable: {table_name}")
+            print(f"Shape: {df.shape}")
+            print("Columns:", df.columns.tolist())
+            
+    except Exception as e:
+        print(f"\nError in main execution: {e}")
