@@ -1,5 +1,3 @@
-# helper.py
-
 import pandas as pd
 import psycopg2
 import json
@@ -10,9 +8,11 @@ import psutil
 import os
 from datetime import datetime, timedelta
 import gc
+import threading
 
 
 def get_memory_usage():
+    """Get current memory usage of the process"""
     process = psutil.Process(os.getpid())
     return process.memory_info().rss / 1024 / 1024
 
@@ -54,6 +54,7 @@ def connect_to_postgres(db_params: Dict) -> psycopg2.extensions.connection:
 
 
 def optimize_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    """Optimize memory usage of DataFrame by downcasting numeric types"""
     for col in df.columns:
         if df[col].dtype == 'int64':
             if df[col].min() >= 0:
@@ -75,8 +76,18 @@ def optimize_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def fetch_table_data(table_name: str, conn: psycopg2.extensions.connection) -> pd.DataFrame:
+def fetch_table_data(table_name: str, conn: psycopg2.extensions.connection, last_update: datetime = None) -> pd.DataFrame:
+    """Fetch data from specified table with optional incremental loading"""
     try:
+        timestamp_columns = {
+            'dc1.events': 'created_ts',
+            'dc1sm_ro.incidents': 'update_time',
+            'dc1sm_ro.rfc': 'update_time',
+            'dc1sm_ro.problems': 'update_time',
+            'dc1sm_ro.problem_tasks': 'update_time',
+            'itsm_owner.cis': 'pfz_added_time'
+        }
+        
         with conn.cursor() as cursor:
             cursor.execute(f"""
                 SELECT column_name 
@@ -87,31 +98,47 @@ def fetch_table_data(table_name: str, conn: psycopg2.extensions.connection) -> p
             """)
             columns = [row[0] for row in cursor.fetchall()]
 
-            # Format column names based on table
             if 'events' in table_name:
                 columns = [col.lower() for col in columns]
             else:
                 columns = [col.upper() for col in columns]
 
             columns_str = ', '.join(columns)
-            if 'incidents' in table_name:
-                seven_days_ago = (datetime.now() - timedelta(days=7)).strftime('%Y-%m-%d')
+            
+            if last_update and table_name in timestamp_columns:
                 query = f"""
                     SELECT {columns_str} 
                     FROM {table_name}
-                    WHERE update_time >= '{seven_days_ago}'
-                    LIMIT 200000
+                    WHERE {timestamp_columns[table_name]} >= '{last_update.strftime('%Y-%m-%d %H:%M:%S')}'
                 """
+                if 'incidents' in table_name:
+                    query += " ORDER BY open_time DESC"
             else:
-                query = f"""
-                    SELECT {columns_str} 
-                    FROM {table_name}
-                """
+                if 'incidents' in table_name:
+                    seven_days_ago = (datetime.now() - timedelta(days=7)).strftime('%Y-%m-%d')
+                    query = f"""
+                        SELECT {columns_str} 
+                        FROM {table_name}
+                        WHERE update_time >= '{seven_days_ago}'
+                        ORDER BY open_time DESC
+                        LIMIT 200000
+                    """
+                else:
+                    query = f"""
+                        SELECT {columns_str} 
+                        FROM {table_name}
+                    """
 
             # Get row count
-            cursor.execute(query.replace(columns_str, 'COUNT(*)', 1))
+            count_query = query.replace(columns_str, 'COUNT(*)', 1)
+            if 'ORDER BY' in count_query:
+                count_query = count_query[:count_query.index('ORDER BY')]
+            cursor.execute(count_query)
             total_rows = cursor.fetchone()[0]
             print(f"Total rows to fetch from {table_name}: {total_rows:,}")
+
+            if total_rows == 0:
+                return pd.DataFrame(columns=columns)
 
             chunk_size = 50000
             chunks = []
@@ -131,7 +158,6 @@ def fetch_table_data(table_name: str, conn: psycopg2.extensions.connection) -> p
                         rows_processed += len(df_chunk)
                         pbar.update(len(df_chunk))
                         
-                        # Show memory usage every 500k rows
                         if rows_processed % 500000 == 0:
                             current_memory = get_memory_usage()
                             print(f"\nProcessed {rows_processed:,} rows. Memory usage: {current_memory:.2f} MB")
@@ -150,37 +176,71 @@ def fetch_table_data(table_name: str, conn: psycopg2.extensions.connection) -> p
         return pd.DataFrame()
 
 
-def get_all_tables() -> Dict[str, pd.DataFrame]:
-    """Main function to fetch all tables and return as dictionary of DataFrames"""
-    tables = {
-        'events': 'dc1.events',
-        'incidents': 'dc1sm_ro.incidents',
-        'rfc': 'dc1sm_ro.rfc',
-        'problems': 'dc1sm_ro.problems',
-        'problem_tasks': 'dc1sm_ro.problem_tasks',
-        'ci': 'itsm_owner.cis'
-    }
+class PeriodicDataLoader:
+    """Class to manage periodic data loading and updates"""
+    def __init__(self, interval_minutes=15):
+        self.interval_minutes = interval_minutes
+        self.dataframes = {}
+        self.last_update = None
+        self.tables = {
+            'events': 'dc1.events',
+            'incidents': 'dc1sm_ro.incidents',
+            'rfc': 'dc1sm_ro.rfc',
+            'problems': 'dc1sm_ro.problems',
+            'problem_tasks': 'dc1sm_ro.problem_tasks',
+            'ci': 'itsm_owner.cis'
+        }
+        self._stop_event = threading.Event()
+        self._update_thread = None
 
-    results = {}
-
-    try:
-        print("Connecting to database...")
-        conn = connect_to_postgres({})
-        print("Starting data fetch...")
-        
-        for key, table_name in tables.items():
-            print(f"\nProcessing: {table_name}")
-            print("=" * 50)
-            results[key] = fetch_table_data(table_name, conn)
-            if not results[key].empty:
-                print(f"Completed: {table_name}")
-                print(f"Shape: {results[key].shape}")
-                print(f"Memory: {results[key].memory_usage(deep=True).sum() / 1024 / 1024:.2f} MB")
-                print("=" * 50)
-            gc.collect()
+    def update_data(self):
+        """Update all tables with new data"""
+        try:
+            print(f"\nUpdating data at {datetime.now()}")
+            conn = connect_to_postgres({})
+            
+            for key, table_name in self.tables.items():
+                print(f"\nProcessing: {table_name}")
+                new_data = fetch_table_data(table_name, conn, self.last_update)
                 
-    finally:
-        if conn:
+                if not new_data.empty:
+                    if key in self.dataframes:
+                        # Remove duplicates and combine with new data
+                        self.dataframes[key] = pd.concat([new_data, self.dataframes[key]], ignore_index=True)
+                        print(f"Updated {key} - total rows: {len(self.dataframes[key])}")
+                    else:
+                        self.dataframes[key] = new_data
+                        print(f"Initialized {key} with {len(new_data)} rows")
+                
             conn.close()
+            self.last_update = datetime.now()
+            print(f"Update completed at {self.last_update}")
+            gc.collect()
+            
+        except Exception as e:
+            print(f"Error updating data: {e}")
 
-    return results
+    def start_periodic_updates(self):
+        """Start background thread for periodic updates"""
+        def update_loop():
+            while not self._stop_event.is_set():
+                time.sleep(self.interval_minutes * 60)
+                if not self._stop_event.is_set():
+                    self.update_data()
+
+        self._update_thread = threading.Thread(target=update_loop, daemon=True)
+        self._update_thread.start()
+
+    def stop_updates(self):
+        """Stop periodic updates"""
+        self._stop_event.set()
+        if self._update_thread:
+            self._update_thread.join()
+
+
+def get_all_tables() -> Dict[str, pd.DataFrame]:
+    """Main function to fetch all tables and return as dictionary of DataFrames with automatic updates"""
+    loader = PeriodicDataLoader(interval_minutes=15)  # Change to 30 for 30-minute intervals
+    loader.update_data()  # Initial load
+    loader.start_periodic_updates()  # Start periodic updates
+    return loader.dataframes
