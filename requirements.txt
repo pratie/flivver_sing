@@ -1,4 +1,16 @@
-llama-index
-langchain
-openai
-gradio
+
+Taking Time Off for Health  
+
+hi team,  
+
+i’m feeling very unwell with a high fever and cold. i’ll be taking the next four days to rest and recover.  
+
+honestly, i feel like everything is coming to an end. i don’t know why, but it feels that way. in my opinion, there’s a lack of accountability, and it’s been weighing on me.  
+
+everyone should already be familiar with the codebase and what the code does. it’s been almost 3 or 4 months, so every developer in the team should be aware of the code and its flow. i have explained clearly about the code flow a few times, so why can’t we reach out to the rest of the team when i’ve already informed you that i’m super sick? i request not to be added to any calls for the next four days or until i recover completely. if anything urgent comes up, please coordinate with the team or check the documentation.  
+
+thanks for understanding.  
+
+best,  
+prathap  
+
