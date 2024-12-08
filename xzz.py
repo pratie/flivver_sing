@@ -19,8 +19,7 @@ def universal_search(query: str = Query(..., description="Universal search acros
         search_metadata = {
             "search_query": query,
             "search_type": search_type,
-            "input_pattern": query[:2].upper() if query[:2].upper() == 'IM' else query[:2],
-            "timestamp": datetime.now().isoformat()
+            "input_pattern": query[:2].upper() if query[:2].upper() == 'IM' else query[:2]
         }
         
         # Handle different search types
