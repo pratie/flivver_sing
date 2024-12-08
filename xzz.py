@@ -15,7 +15,6 @@ def universal_search(query: str = Query(..., description="Universal search acros
         
         search_type = determine_search_type(query)
         
-        # Create search metadata
         search_metadata = {
             "search_query": query,
             "search_type": search_type,
@@ -25,7 +24,10 @@ def universal_search(query: str = Query(..., description="Universal search acros
         # Handle different search types
         if search_type == 'incident':
             df = incidents_df.copy(deep=True)
-            # Exact match on NUMBERPRGN
+            # Convert timestamp columns to string before converting to dict
+            for col in df.select_dtypes(include=['datetime64[ns]']).columns:
+                df[col] = df[col].astype(str)
+            
             filtered_df = df[df["NUMBERPRGN"] == query]
             if filtered_df.empty:
                 raise HTTPException(status_code=404, detail="Incident not found")
@@ -33,22 +35,27 @@ def universal_search(query: str = Query(..., description="Universal search acros
             
         elif search_type == 'event':
             df = events_df.copy(deep=True)
-            # Exact match on EVENT_ID
+            # Convert timestamp columns to string before converting to dict
+            for col in df.select_dtypes(include=['datetime64[ns]']).columns:
+                df[col] = df[col].astype(str)
+                
             filtered_df = df[df["EVENT_ID"] == query]
             if filtered_df.empty:
                 raise HTTPException(status_code=404, detail="Event not found")
             result = filtered_df.to_dict(orient="records")[0]
             
-        else:  # CI search - keep the broader search
+        else:  # CI search
             df = ci_df.copy(deep=True)
+            # Convert timestamp columns to string before converting to dict
+            for col in df.select_dtypes(include=['datetime64[ns]']).columns:
+                df[col] = df[col].astype(str)
+                
             df = df.astype(str)
             matched_records = df[df.apply(lambda row: row.astype(str).str.contains(query, case=False).any(), axis=1)]
             if matched_records.empty:
                 raise HTTPException(status_code=404, detail="No CI records found")
-            # For CI, we'll return all matches
             result = matched_records.to_dict(orient="records")
         
-        # Prepare response
         response_data = {
             "metadata": search_metadata,
             "result": result,
