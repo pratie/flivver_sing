@@ -23,7 +23,6 @@ def universal_search(
 
         def prepare_for_json(df):
             """Convert dataframe to JSON-safe format"""
-            # Convert entire dataframe to string
             df = df.astype(str)
             return df.to_dict(orient="records")
         
@@ -35,9 +34,9 @@ def universal_search(
             "search_type": search_type,
             "input_pattern": query[:2].upper() if query[:2].upper() == 'IM' else query[:2],
             "pagination": {
-                "current_page": page,
-                "items_per_page": limit,
-                "start_index": start_idx
+                "current_page": int(page),
+                "items_per_page": int(limit),
+                "start_index": int(start_idx)
             }
         }
 
@@ -49,7 +48,7 @@ def universal_search(
             result = {
                 "Incident List": {
                     "total_matches": 1,
-                    "current_page": page,
+                    "current_page": int(page),
                     "total_pages": 1,
                     "data": prepare_for_json(filtered_df)
                 }
@@ -62,7 +61,7 @@ def universal_search(
             result = {
                 "Event List": {
                     "total_matches": 1,
-                    "current_page": page,
+                    "current_page": int(page),
                     "total_pages": 1,
                     "data": prepare_for_json(filtered_df)
                 }
@@ -73,41 +72,41 @@ def universal_search(
             ci_mask = ci_df[CI_SEARCH_COLUMNS].astype(str).apply(
                 lambda x: x.str.contains(query, case=False)).any(axis=1)
             ci_results = ci_df[ci_mask].iloc[start_idx:start_idx + limit]
-            ci_total = ci_mask.sum()
+            ci_total = int(ci_mask.sum())  # Convert to regular int
 
             # Incidents search
             inc_mask = incidents_df[INCIDENT_SEARCH_COLUMNS].astype(str).apply(
                 lambda x: x.str.contains(query, case=False)).any(axis=1)
             inc_results = incidents_df[inc_mask].iloc[start_idx:start_idx + limit]
-            inc_total = inc_mask.sum()
+            inc_total = int(inc_mask.sum())  # Convert to regular int
 
             # Events search
             evt_mask = events_df[EVENT_SEARCH_COLUMNS].astype(str).apply(
                 lambda x: x.str.contains(query, case=False)).any(axis=1)
             evt_results = events_df[evt_mask].iloc[start_idx:start_idx + limit]
-            evt_total = evt_mask.sum()
+            evt_total = int(evt_mask.sum())  # Convert to regular int
             
             # Calculate total pages
-            ci_total_pages = (ci_total + limit - 1) // limit
-            inc_total_pages = (inc_total + limit - 1) // limit
-            evt_total_pages = (evt_total + limit - 1) // limit
+            ci_total_pages = int((ci_total + limit - 1) // limit)
+            inc_total_pages = int((inc_total + limit - 1) // limit)
+            evt_total_pages = int((evt_total + limit - 1) // limit)
             
             result = {
                 "Event List": {
-                    "total_matches": int(evt_total),
-                    "current_page": page,
+                    "total_matches": evt_total,
+                    "current_page": int(page),
                     "total_pages": evt_total_pages,
                     "data": prepare_for_json(evt_results)
                 },
                 "Incident List": {
-                    "total_matches": int(inc_total),
-                    "current_page": page,
+                    "total_matches": inc_total,
+                    "current_page": int(page),
                     "total_pages": inc_total_pages,
                     "data": prepare_for_json(inc_results)
                 },
                 "CI List": {
-                    "total_matches": int(ci_total),
-                    "current_page": page,
+                    "total_matches": ci_total,
+                    "current_page": int(page),
                     "total_pages": ci_total_pages,
                     "data": prepare_for_json(ci_results)
                 }
