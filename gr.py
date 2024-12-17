@@ -21,32 +21,11 @@ def universal_search(
             else:
                 return 'ci'
 
-        def convert_dtypes(df):
-            """Convert problematic data types for JSON serialization"""
-            df = df.copy()
-            # Convert timestamps
-            for col in df.select_dtypes(include=['datetime64[ns]']).columns:
-                df[col] = df[col].astype(str)
-            # Convert int64 to regular int
-            for col in df.select_dtypes(include=['int64']).columns:
-                df[col] = df[col].astype(int)
-            # Convert float64 to regular float if needed
-            for col in df.select_dtypes(include=['float64']).columns:
-                df[col] = df[col].astype(float)
-            return df
-
         def prepare_for_json(df):
-            """Prepare dataframe for JSON serialization"""
-            # Convert problematic data types
-            df = convert_dtypes(df)
-            # Convert to records and handle any remaining numeric types
-            records = df.to_dict(orient="records")
-            # Ensure all numeric values are Python native types
-            for record in records:
-                for key, value in record.items():
-                    if str(type(value)).find('numpy') != -1:
-                        record[key] = value.item()
-            return records
+            """Convert dataframe to JSON-safe format"""
+            # Convert entire dataframe to string
+            df = df.astype(str)
+            return df.to_dict(orient="records")
         
         search_type = determine_search_type(query)
         start_idx = (page - 1) * limit
