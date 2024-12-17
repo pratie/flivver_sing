@@ -20,6 +20,13 @@ def universal_search(
                 return 'event'
             else:
                 return 'ci'
+
+        def convert_timestamps(df):
+            """Convert all timestamp columns to string format"""
+            df = df.copy()
+            for col in df.select_dtypes(include=['datetime64[ns]']).columns:
+                df[col] = df[col].astype(str)
+            return df
         
         search_type = determine_search_type(query)
         start_idx = (page - 1) * limit
@@ -63,6 +70,7 @@ def universal_search(
                 ):
                     # Get the full row data for matches in this chunk
                     matching_rows = df.iloc[chunk_start:chunk_end][mask]
+                    matching_rows = convert_timestamps(matching_rows)  # Convert timestamps
                     matching_chunks.append(matching_rows)
                 
                 # Early exit if we have enough results
@@ -82,6 +90,7 @@ def universal_search(
         # Handle different search types
         if search_type == 'incident':
             filtered_df = incidents_df[incidents_df["NUMBERPRGN"] == query]
+            filtered_df = convert_timestamps(filtered_df)  # Convert timestamps
             if filtered_df.empty:
                 raise HTTPException(status_code=404, detail="Incident not found")
             result = {
@@ -94,7 +103,12 @@ def universal_search(
             }
             
         elif search_type == 'event':
-            filtered_df = events_df[events_df["EVENT_ID"] == int(query)]
+            df_copy = events_df.copy()
+            # Convert query to int and find matching rows
+            filtered_df = df_copy[df_copy["EVENT_ID"] == int(query)]
+            # Convert timestamps to strings
+            filtered_df = convert_timestamps(filtered_df)
+            
             if filtered_df.empty:
                 raise HTTPException(status_code=404, detail="Event not found")
             result = {
@@ -111,7 +125,7 @@ def universal_search(
             evt_df_subset = events_df[EVENT_SEARCH_COLUMNS].astype(str)
             evt_mask = evt_df_subset.apply(lambda x: x.str.contains(query, case=False)).any(axis=1)
             evt_total = evt_mask.sum()
-            evt_results = events_df[evt_mask].iloc[start_idx:start_idx + limit]
+            evt_results = convert_timestamps(events_df[evt_mask].iloc[start_idx:start_idx + limit])
             
             # Use optimized search for CI and incidents
             ci_results, ci_total = optimized_search(ci_df, CI_SEARCH_COLUMNS, query)
