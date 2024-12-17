@@ -9,6 +9,11 @@ def universal_search(
     INCIDENT_SEARCH_COLUMNS = ['col3', 'col4']
     CI_SEARCH_COLUMNS = ['col5', 'col6']
     
+    # Define output columns for each type (columns to return in response)
+    EVENT_OUTPUT_COLUMNS = ['col1', 'col2', 'status', 'priority']  # Replace with your actual column names
+    INCIDENT_OUTPUT_COLUMNS = ['col3', 'col4', 'status', 'severity']  # Replace with your actual column names
+    CI_OUTPUT_COLUMNS = ['col5', 'col6', 'type', 'location']  # Replace with your actual column names
+    
     if not query:
         raise HTTPException(status_code=400, detail="No search query provided")
     
@@ -21,9 +26,10 @@ def universal_search(
             else:
                 return 'ci'
 
-        def prepare_for_json(df):
-            """Convert dataframe to JSON-safe format"""
-            df = df.astype(str)
+        def prepare_for_json(df, output_columns):
+            """Convert dataframe to JSON-safe format with selected columns"""
+            # Select only required columns and convert to string
+            df = df[output_columns].astype(str)
             return df.to_dict(orient="records")
         
         search_type = determine_search_type(query)
@@ -50,7 +56,7 @@ def universal_search(
                     "total_matches": 1,
                     "current_page": int(page),
                     "total_pages": 1,
-                    "data": prepare_for_json(filtered_df)
+                    "data": prepare_for_json(filtered_df, INCIDENT_OUTPUT_COLUMNS)
                 }
             }
             
@@ -63,7 +69,7 @@ def universal_search(
                     "total_matches": 1,
                     "current_page": int(page),
                     "total_pages": 1,
-                    "data": prepare_for_json(filtered_df)
+                    "data": prepare_for_json(filtered_df, EVENT_OUTPUT_COLUMNS)
                 }
             }
             
@@ -72,19 +78,19 @@ def universal_search(
             ci_mask = ci_df[CI_SEARCH_COLUMNS].astype(str).apply(
                 lambda x: x.str.contains(query, case=False)).any(axis=1)
             ci_results = ci_df[ci_mask].iloc[start_idx:start_idx + limit]
-            ci_total = int(ci_mask.sum())  # Convert to regular int
+            ci_total = int(ci_mask.sum())
 
             # Incidents search
             inc_mask = incidents_df[INCIDENT_SEARCH_COLUMNS].astype(str).apply(
                 lambda x: x.str.contains(query, case=False)).any(axis=1)
             inc_results = incidents_df[inc_mask].iloc[start_idx:start_idx + limit]
-            inc_total = int(inc_mask.sum())  # Convert to regular int
+            inc_total = int(inc_mask.sum())
 
             # Events search
             evt_mask = events_df[EVENT_SEARCH_COLUMNS].astype(str).apply(
                 lambda x: x.str.contains(query, case=False)).any(axis=1)
             evt_results = events_df[evt_mask].iloc[start_idx:start_idx + limit]
-            evt_total = int(evt_mask.sum())  # Convert to regular int
+            evt_total = int(evt_mask.sum())
             
             # Calculate total pages
             ci_total_pages = int((ci_total + limit - 1) // limit)
@@ -96,19 +102,19 @@ def universal_search(
                     "total_matches": evt_total,
                     "current_page": int(page),
                     "total_pages": evt_total_pages,
-                    "data": prepare_for_json(evt_results)
+                    "data": prepare_for_json(evt_results, EVENT_OUTPUT_COLUMNS)
                 },
                 "Incident List": {
                     "total_matches": inc_total,
                     "current_page": int(page),
                     "total_pages": inc_total_pages,
-                    "data": prepare_for_json(inc_results)
+                    "data": prepare_for_json(inc_results, INCIDENT_OUTPUT_COLUMNS)
                 },
                 "CI List": {
                     "total_matches": ci_total,
                     "current_page": int(page),
                     "total_pages": ci_total_pages,
-                    "data": prepare_for_json(ci_results)
+                    "data": prepare_for_json(ci_results, CI_OUTPUT_COLUMNS)
                 }
             }
             
