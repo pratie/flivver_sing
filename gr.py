@@ -1,7 +1,8 @@
 @app.get(path="/api/UniversalSearch", tags=['search_data'])
 def universal_search(
     query: str = Query(..., description="Universal search across Incidents, Events, and CI records"),
-    limit: int = Query(default=10, description="Maximum number of results per type", ge=1)
+    limit: int = Query(default=10, description="Maximum number of results per type", ge=1),
+    page: int = Query(default=1, description="Page number", ge=1)
 ):
     # Define search columns for each type
     EVENT_SEARCH_COLUMNS = ['col1', 'col2']
@@ -22,11 +23,19 @@ def universal_search(
         
         search_type = determine_search_type(query)
         
+        # Calculate pagination indices
+        start_idx = (page - 1) * limit
+        end_idx = start_idx + limit
+        
         search_metadata = {
             "search_query": query,
             "search_type": search_type,
             "input_pattern": query[:2].upper() if query[:2].upper() == 'IM' else query[:2],
-            "limit_per_type": limit
+            "pagination": {
+                "current_page": page,
+                "items_per_page": limit,
+                "start_index": start_idx
+            }
         }
         
         # Handle different search types
@@ -42,6 +51,8 @@ def universal_search(
             result = {
                 "Incident List": {
                     "total_matches": 1,
+                    "current_page": page,
+                    "total_pages": 1,
                     "data": filtered_df.to_dict(orient="records")
                 }
             }
@@ -58,6 +69,8 @@ def universal_search(
             result = {
                 "Event List": {
                     "total_matches": 1,
+                    "current_page": page,
+                    "total_pages": 1,
                     "data": filtered_df.to_dict(orient="records")
                 }
             }
@@ -84,19 +97,30 @@ def universal_search(
                 evt_df_copy[EVENT_SEARCH_COLUMNS].apply(lambda x: x.str.contains(query, case=False)).any(axis=1)
             ]
             
-            # Structure results with counts and limited data
+            # Calculate total pages for each type
+            evt_total_pages = (len(event_matches) + limit - 1) // limit
+            inc_total_pages = (len(incident_matches) + limit - 1) // limit
+            ci_total_pages = (len(ci_matches) + limit - 1) // limit
+            
+            # Structure results with counts and paginated data
             result = {
                 "Event List": {
                     "total_matches": len(event_matches),
-                    "data": event_matches.head(limit).to_dict(orient="records")
+                    "current_page": page,
+                    "total_pages": evt_total_pages,
+                    "data": event_matches.iloc[start_idx:end_idx].to_dict(orient="records")
                 },
                 "Incident List": {
                     "total_matches": len(incident_matches),
-                    "data": incident_matches.head(limit).to_dict(orient="records")
+                    "current_page": page,
+                    "total_pages": inc_total_pages,
+                    "data": incident_matches.iloc[start_idx:end_idx].to_dict(orient="records")
                 },
                 "CI List": {
                     "total_matches": len(ci_matches),
-                    "data": ci_matches.head(limit).to_dict(orient="records")
+                    "current_page": page,
+                    "total_pages": ci_total_pages,
+                    "data": ci_matches.iloc[start_idx:end_idx].to_dict(orient="records")
                 }
             }
             
