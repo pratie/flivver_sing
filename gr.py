@@ -21,12 +21,32 @@ def universal_search(
             else:
                 return 'ci'
 
-        def convert_timestamps(df):
-            """Convert all timestamp columns to string format"""
+        def convert_dtypes(df):
+            """Convert problematic data types for JSON serialization"""
             df = df.copy()
+            # Convert timestamps
             for col in df.select_dtypes(include=['datetime64[ns]']).columns:
                 df[col] = df[col].astype(str)
+            # Convert int64 to regular int
+            for col in df.select_dtypes(include=['int64']).columns:
+                df[col] = df[col].astype(int)
+            # Convert float64 to regular float if needed
+            for col in df.select_dtypes(include=['float64']).columns:
+                df[col] = df[col].astype(float)
             return df
+
+        def prepare_for_json(df):
+            """Prepare dataframe for JSON serialization"""
+            # Convert problematic data types
+            df = convert_dtypes(df)
+            # Convert to records and handle any remaining numeric types
+            records = df.to_dict(orient="records")
+            # Ensure all numeric values are Python native types
+            for record in records:
+                for key, value in record.items():
+                    if str(type(value)).find('numpy') != -1:
+                        record[key] = value.item()
+            return records
         
         search_type = determine_search_type(query)
         start_idx = (page - 1) * limit
@@ -42,55 +62,9 @@ def universal_search(
             }
         }
 
-        def optimized_search(df, columns, query_str, chunk_size=10000):
-            """Memory efficient search function using chunking"""
-            total_count = 0
-            matching_chunks = []
-            
-            # Only get required columns
-            df_subset = df[columns]
-            
-            # Process in chunks
-            for chunk_start in range(0, len(df_subset), chunk_size):
-                chunk_end = min(chunk_start + chunk_size, len(df_subset))
-                chunk = df_subset.iloc[chunk_start:chunk_end]
-                
-                # Convert chunk to string and search
-                chunk = chunk.astype(str)
-                mask = chunk.apply(lambda x: x.str.contains(query_str, case=False)).any(axis=1)
-                
-                # Count matches in this chunk
-                chunk_matches = mask.sum()
-                total_count += chunk_matches
-                
-                # If this chunk contains our pagination range, keep it
-                if chunk_matches > 0 and (
-                    start_idx < (total_count) and 
-                    (start_idx + limit) > (total_count - chunk_matches)
-                ):
-                    # Get the full row data for matches in this chunk
-                    matching_rows = df.iloc[chunk_start:chunk_end][mask]
-                    matching_rows = convert_timestamps(matching_rows)  # Convert timestamps
-                    matching_chunks.append(matching_rows)
-                
-                # Early exit if we have enough results
-                if total_count > (start_idx + limit) * 2:
-                    break
-            
-            # Combine chunks and apply final pagination
-            if matching_chunks:
-                results = pd.concat(matching_chunks)
-                results = results.iloc[max(0, start_idx - (total_count - len(results))):
-                                    max(0, start_idx - (total_count - len(results))) + limit]
-            else:
-                results = pd.DataFrame()
-                
-            return results, total_count
-
         # Handle different search types
         if search_type == 'incident':
             filtered_df = incidents_df[incidents_df["NUMBERPRGN"] == query]
-            filtered_df = convert_timestamps(filtered_df)  # Convert timestamps
             if filtered_df.empty:
                 raise HTTPException(status_code=404, detail="Incident not found")
             result = {
@@ -98,17 +72,12 @@ def universal_search(
                     "total_matches": 1,
                     "current_page": page,
                     "total_pages": 1,
-                    "data": filtered_df.to_dict(orient="records")
+                    "data": prepare_for_json(filtered_df)
                 }
             }
             
         elif search_type == 'event':
-            df_copy = events_df.copy()
-            # Convert query to int and find matching rows
-            filtered_df = df_copy[df_copy["EVENT_ID"] == int(query)]
-            # Convert timestamps to strings
-            filtered_df = convert_timestamps(filtered_df)
-            
+            filtered_df = events_df[events_df["EVENT_ID"] == int(query)]
             if filtered_df.empty:
                 raise HTTPException(status_code=404, detail="Event not found")
             result = {
@@ -116,20 +85,28 @@ def universal_search(
                     "total_matches": 1,
                     "current_page": page,
                     "total_pages": 1,
-                    "data": filtered_df.to_dict(orient="records")
+                    "data": prepare_for_json(filtered_df)
                 }
             }
             
         else:  # Free text search
-            # Process events normally (since it's smaller)
-            evt_df_subset = events_df[EVENT_SEARCH_COLUMNS].astype(str)
-            evt_mask = evt_df_subset.apply(lambda x: x.str.contains(query, case=False)).any(axis=1)
+            # CI search
+            ci_mask = ci_df[CI_SEARCH_COLUMNS].astype(str).apply(
+                lambda x: x.str.contains(query, case=False)).any(axis=1)
+            ci_results = ci_df[ci_mask].iloc[start_idx:start_idx + limit]
+            ci_total = ci_mask.sum()
+
+            # Incidents search
+            inc_mask = incidents_df[INCIDENT_SEARCH_COLUMNS].astype(str).apply(
+                lambda x: x.str.contains(query, case=False)).any(axis=1)
+            inc_results = incidents_df[inc_mask].iloc[start_idx:start_idx + limit]
+            inc_total = inc_mask.sum()
+
+            # Events search
+            evt_mask = events_df[EVENT_SEARCH_COLUMNS].astype(str).apply(
+                lambda x: x.str.contains(query, case=False)).any(axis=1)
+            evt_results = events_df[evt_mask].iloc[start_idx:start_idx + limit]
             evt_total = evt_mask.sum()
-            evt_results = convert_timestamps(events_df[evt_mask].iloc[start_idx:start_idx + limit])
-            
-            # Use optimized search for CI and incidents
-            ci_results, ci_total = optimized_search(ci_df, CI_SEARCH_COLUMNS, query)
-            inc_results, inc_total = optimized_search(incidents_df, INCIDENT_SEARCH_COLUMNS, query)
             
             # Calculate total pages
             ci_total_pages = (ci_total + limit - 1) // limit
@@ -141,19 +118,19 @@ def universal_search(
                     "total_matches": int(evt_total),
                     "current_page": page,
                     "total_pages": evt_total_pages,
-                    "data": evt_results.to_dict(orient="records")
+                    "data": prepare_for_json(evt_results)
                 },
                 "Incident List": {
                     "total_matches": int(inc_total),
                     "current_page": page,
                     "total_pages": inc_total_pages,
-                    "data": inc_results.to_dict(orient="records")
+                    "data": prepare_for_json(inc_results)
                 },
                 "CI List": {
                     "total_matches": int(ci_total),
                     "current_page": page,
                     "total_pages": ci_total_pages,
-                    "data": ci_results.to_dict(orient="records")
+                    "data": prepare_for_json(ci_results)
                 }
             }
             
